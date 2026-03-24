@@ -27,7 +27,7 @@ You can configure the exporter using command-line arguments or a configuration f
 
 **Example:**
 ```bash
-./spooldir_exporter --paths=/var/spool/mail,/tmp --file.patterns='^msg.*','.*' --max-depth=1
+./spooldir_exporter --paths=/var/spool/mail --paths=/tmp --file.patterns='.*\.log$' --max-depth=1
 ```
 
 ### Configuration File
@@ -43,10 +43,10 @@ max_depth: 2
 timeout: 10
 targets:
   - path: "/var/spool/mqueue"
-    pattern: '.*\.qf'
+    pattern: '.*\.qf$'
     max_depth: 1
   - path: "/tmp"
-    pattern: '.*\.log'
+    pattern: '.*\.log$'
 ```
 
 **Running with config file:**
