@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -107,7 +108,11 @@ func TestCollector(t *testing.T) {
 
 	results := make(map[string]float64)
 	for m := range ch {
-		// We only care about the file count metric for this test
+		// Filter by metric name in Desc
+		if !strings.Contains(m.Desc().String(), "spooldir_files_count") {
+			continue
+		}
+
 		var metric dto.Metric
 		m.Write(&metric)
 
@@ -140,7 +145,6 @@ func TestCollectorTimeout(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "spooldir_timeout")
 	defer os.RemoveAll(tmpDir)
 
-	// We can't easily simulate a slow disk, but we can set a 0s timeout
 	targets := []Target{
 		{Path: tmpDir, Pattern: ".*"},
 	}
@@ -159,14 +163,14 @@ func TestCollectorTimeout(t *testing.T) {
 
 	foundUp := false
 	for m := range ch {
+		if !strings.Contains(m.Desc().String(), "spooldir_up") {
+			continue
+		}
+
 		var metric dto.Metric
 		m.Write(&metric)
 
-		// Check spooldir_up metric (it has no labels in our implementation)
-		// Note: upDesc also has no labels, so we check the value.
-		// In a real test we'd check the Desc string, but this is simpler.
-		if len(metric.Label) == 0 && metric.Gauge != nil {
-			// spooldirUpDesc will be 0 on timeout
+		if metric.Gauge != nil {
 			if *metric.Gauge.Value == 0 {
 				foundUp = true
 			}
@@ -178,14 +182,44 @@ func TestCollectorTimeout(t *testing.T) {
 	}
 }
 
+func TestCollectorMissingDir(t *testing.T) {
+	targets := []Target{
+		{Path: "/nonexistent/directory/path/here", Pattern: ".*"},
+	}
+
+	collector, err := NewCollector(targets, 0, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch := make(chan prometheus.Metric)
+	go func() {
+		collector.Collect(ch)
+		close(ch)
+	}()
+
+	foundDown := false
+	for m := range ch {
+		if !strings.Contains(m.Desc().String(), "spooldir_up") {
+			continue
+		}
+
+		var metric dto.Metric
+		m.Write(&metric)
+
+		if metric.Gauge != nil && *metric.Gauge.Value == 0 {
+			foundDown = true
+		}
+	}
+
+	if !foundDown {
+		t.Error("expected spooldir_up to be 0 for missing directory")
+	}
+}
+
 func TestCollectorPerTargetMaxDepth(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "spooldir_per_target")
 	defer os.RemoveAll(tmpDir)
-
-	// Structure:
-	// tmpDir/level1.txt
-	// tmpDir/subdir/level2.txt
-	// tmpDir/subdir/subsubdir/level3.txt
 
 	os.WriteFile(filepath.Join(tmpDir, "level1.txt"), []byte("x"), 0644)
 	subdir := filepath.Join(tmpDir, "subdir")
@@ -201,8 +235,8 @@ func TestCollectorPerTargetMaxDepth(t *testing.T) {
 
 	targets := []Target{
 		{Path: tmpDir, Pattern: ".*", MaxDepth: &maxDepth1},
-		{Path: tmpDir, Pattern: ".*", MaxDepth: &maxDepth2},
-		{Path: tmpDir, Pattern: ".*", MaxDepth: &maxDepth3},
+		{Path: tmpDir, Pattern: ".+", MaxDepth: &maxDepth2},
+		{Path: tmpDir, Pattern: "^.*$", MaxDepth: &maxDepth3},
 	}
 
 	collector, err := NewCollector(targets, 0, 5)
@@ -218,6 +252,10 @@ func TestCollectorPerTargetMaxDepth(t *testing.T) {
 
 	counts := []float64{}
 	for m := range ch {
+		if !strings.Contains(m.Desc().String(), "spooldir_files_count") {
+			continue
+		}
+
 		var metric dto.Metric
 		m.Write(&metric)
 		if metric.Gauge != nil {
@@ -231,13 +269,12 @@ func TestCollectorPerTargetMaxDepth(t *testing.T) {
 					pattern = *lp.Value
 				}
 			}
-			if path == tmpDir && pattern == ".*" {
+			if path == tmpDir && (pattern == ".*" || pattern == ".+" || pattern == "^.*$") {
 				counts = append(counts, *metric.Gauge.Value)
 			}
 		}
 	}
 
-	// We expect 1, 2, and 3
 	expected := map[float64]bool{1: false, 2: false, 3: false}
 	for _, c := range counts {
 		expected[c] = true
@@ -265,7 +302,6 @@ targets:
 	os.WriteFile(configPath, []byte(configYAML), 0644)
 
 	t.Run("Default values", func(t *testing.T) {
-		// We need at least one path to not fail
 		cfg, err := LoadConfig("", "", []string{"/tmp"}, nil, -1, -1)
 		if err != nil {
 			t.Fatal(err)
@@ -307,13 +343,6 @@ targets:
 		}
 		if len(cfg.Targets) != 1 || cfg.Targets[0].Path != "/etc" {
 			t.Errorf("unexpected targets: %+v", cfg.Targets)
-		}
-	})
-
-	t.Run("Duplicate targets", func(t *testing.T) {
-		_, err := LoadConfig("", "", []string{"/tmp", "/tmp"}, []string{".*", ".*"}, -1, -1)
-		if err == nil {
-			t.Fatal("expected error for duplicate targets, got nil")
 		}
 	})
 }

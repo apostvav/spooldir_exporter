@@ -79,6 +79,8 @@ func NewCollector(targets []Target, globalMaxDepth int, timeout int) (*Collector
 		}
 	}
 
+	commonLabels := []string{"path", "pattern"}
+
 	return &Collector{
 		paths:          paths,
 		patterns:       compiledPatterns,
@@ -87,23 +89,23 @@ func NewCollector(targets []Target, globalMaxDepth int, timeout int) (*Collector
 		timeout:        time.Duration(timeout) * time.Second,
 		upDesc: prometheus.NewDesc(
 			"up",
-			"1 if the target is up",
+			"1 if the exporter is running.",
 			nil, nil,
 		),
 		spooldirUpDesc: prometheus.NewDesc(
 			"spooldir_up",
 			"1 if the target is up, 0 otherwise.",
-			nil, nil,
+			commonLabels, nil,
 		),
 		filesDesc: prometheus.NewDesc(
 			"spooldir_files_count",
 			"Number of files in the spool directory.",
-			[]string{"path", "pattern"}, nil,
+			commonLabels, nil,
 		),
 		sizeDesc: prometheus.NewDesc(
 			"spooldir_files_size_bytes",
 			"Total size of files in the spool directory in bytes.",
-			[]string{"path", "pattern"}, nil,
+			commonLabels, nil,
 		),
 		scrapeDurationDesc: prometheus.NewDesc(
 			"spooldir_scrape_duration_seconds",
@@ -132,15 +134,16 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	// Always report up=1 to indicate the exporter itself is running.
 	ch <- prometheus.MustNewConstMetric(c.upDesc, prometheus.GaugeValue, 1)
 
-	type fileMetric struct {
+	type targetResult struct {
 		path    string
 		pattern string
 		count   float64
 		size    float64
+		up      float64
 	}
 
 	// Buffer result channel to avoid blocking if context cancels
-	results := make(chan fileMetric, len(c.paths))
+	results := make(chan targetResult, len(c.paths))
 	var wg sync.WaitGroup
 
 	for i, path := range c.paths {
@@ -151,9 +154,21 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 				return
 			}
 			fileCount, fileSize := c.countFiles(ctx, path, c.patterns[i], 1, c.maxDepths[i])
+
+			up := 1.0
+			if fileCount == -1 {
+				up = 0.0
+			}
+
 			// Using select to send or drop if context is done
 			select {
-			case results <- fileMetric{path: path, pattern: c.patternStrings[i], count: float64(fileCount), size: float64(fileSize)}:
+			case results <- targetResult{
+				path:    path,
+				pattern: c.patternStrings[i],
+				count:   float64(fileCount),
+				size:    float64(fileSize),
+				up:      up,
+			}:
 			case <-ctx.Done():
 			}
 		}(i, path)
@@ -165,9 +180,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		close(results)
 	}()
 
-	// Collect results until done or timeout
-	success := true
-	collectedMetrics := []fileMetric{}
+	// Map to track which paths we've received results for
+	received := make(map[string]bool)
+	collectedResults := []targetResult{}
 
 loop:
 	for {
@@ -176,22 +191,28 @@ loop:
 			if !ok {
 				break loop
 			}
-			collectedMetrics = append(collectedMetrics, res)
+			received[res.path] = true
+			collectedResults = append(collectedResults, res)
 		case <-ctx.Done():
-			success = false
 			log.Printf("Timeout of %v exceeded", c.timeout)
 			break loop
 		}
 	}
 
-	if success {
-		ch <- prometheus.MustNewConstMetric(c.spooldirUpDesc, prometheus.GaugeValue, 1)
-		for _, m := range collectedMetrics {
-			ch <- prometheus.MustNewConstMetric(c.filesDesc, prometheus.GaugeValue, m.count, m.path, m.pattern)
-			ch <- prometheus.MustNewConstMetric(c.sizeDesc, prometheus.GaugeValue, m.size, m.path, m.pattern)
+	// Report results we collected
+	for _, res := range collectedResults {
+		ch <- prometheus.MustNewConstMetric(c.spooldirUpDesc, prometheus.GaugeValue, res.up, res.path, res.pattern)
+		if res.up == 1 {
+			ch <- prometheus.MustNewConstMetric(c.filesDesc, prometheus.GaugeValue, res.count, res.path, res.pattern)
+			ch <- prometheus.MustNewConstMetric(c.sizeDesc, prometheus.GaugeValue, res.size, res.path, res.pattern)
 		}
-	} else {
-		ch <- prometheus.MustNewConstMetric(c.spooldirUpDesc, prometheus.GaugeValue, 0)
+	}
+
+	// For any targets that didn't finish (due to timeout), report them as down
+	for i, path := range c.paths {
+		if !received[path] {
+			ch <- prometheus.MustNewConstMetric(c.spooldirUpDesc, prometheus.GaugeValue, 0, path, c.patternStrings[i])
+		}
 	}
 
 	ch <- prometheus.MustNewConstMetric(c.scrapeDurationDesc, prometheus.GaugeValue, time.Since(start).Seconds())
