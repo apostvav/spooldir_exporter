@@ -188,7 +188,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		close(results)
 	}()
 
-	// Map to track which paths we've received results for
+	// Map to track which targets (path + pattern) we've received results for
 	received := make(map[string]bool)
 	collectedResults := []targetResult{}
 
@@ -199,7 +199,8 @@ loop:
 			if !ok {
 				break loop
 			}
-			received[res.path] = true
+			key := res.path + "|" + res.pattern
+			received[key] = true
 			collectedResults = append(collectedResults, res)
 		case <-ctx.Done():
 			log.Printf("Timeout of %v exceeded", c.timeout)
@@ -218,7 +219,8 @@ loop:
 
 	// For any targets that didn't finish (due to timeout), report them as down
 	for i, path := range c.paths {
-		if !received[path] {
+		key := path + "|" + c.patternStrings[i]
+		if !received[key] {
 			ch <- prometheus.MustNewConstMetric(c.spooldirUpDesc, prometheus.GaugeValue, 0, path, c.patternStrings[i])
 		}
 	}

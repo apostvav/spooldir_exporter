@@ -182,6 +182,47 @@ func TestCollectorTimeout(t *testing.T) {
 	}
 }
 
+func TestCollectorTimeoutMixed(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "spooldir_timeout_mixed")
+	defer os.RemoveAll(tmpDir)
+
+	targets := []Target{
+		{Path: tmpDir, Pattern: "a.*"},
+		{Path: tmpDir, Pattern: "b.*"},
+	}
+
+	// Timeout of 0 will trigger immediate deadline
+	collector, err := NewCollector(targets, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch := make(chan prometheus.Metric)
+	go func() {
+		collector.Collect(ch)
+		close(ch)
+	}()
+
+	downCount := 0
+	for m := range ch {
+		if !strings.Contains(m.Desc().String(), "spooldir_up") {
+			continue
+		}
+
+		var metric dto.Metric
+		m.Write(&metric)
+
+		if metric.Gauge != nil && *metric.Gauge.Value == 0 {
+			downCount++
+		}
+	}
+
+	// Before the fix, this would have been 1. After the fix, it should be 2.
+	if downCount != 2 {
+		t.Errorf("expected 2 targets to be reported as down on timeout, got %d", downCount)
+	}
+}
+
 func TestCollectorMissingDir(t *testing.T) {
 	targets := []Target{
 		{Path: "/nonexistent/directory/path/here", Pattern: ".*"},
