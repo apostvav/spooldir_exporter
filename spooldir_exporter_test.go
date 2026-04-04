@@ -287,6 +287,21 @@ func TestCollectorPerTargetMaxDepth(t *testing.T) {
 	}
 }
 
+func TestNewCollectorDuplicateTargets(t *testing.T) {
+	targets := []Target{
+		{Path: "/tmp", Pattern: ".*"},
+		{Path: "/tmp/", Pattern: ".*"}, // Duplicate with different suffix
+	}
+
+	_, err := NewCollector(targets, 0, 5)
+	if err == nil {
+		t.Fatal("expected error for duplicate targets, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate target found") {
+		t.Errorf("expected error message to contain 'duplicate target found', got: %v", err)
+	}
+}
+
 func TestLoadConfig(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "config_test")
 	defer os.RemoveAll(tmpDir)
@@ -343,6 +358,16 @@ targets:
 		}
 		if len(cfg.Targets) != 1 || cfg.Targets[0].Path != "/etc" {
 			t.Errorf("unexpected targets: %+v", cfg.Targets)
+		}
+	})
+
+	t.Run("Duplicate targets from CLI", func(t *testing.T) {
+		_, err := LoadConfig("", "", []string{"/tmp", "/tmp/"}, nil, -1, -1)
+		if err == nil {
+			t.Fatal("expected error for duplicate targets, got nil")
+		}
+		if !strings.Contains(err.Error(), "duplicate target found") {
+			t.Errorf("expected error message to contain 'duplicate target found', got: %v", err)
 		}
 	})
 }

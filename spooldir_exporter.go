@@ -58,13 +58,21 @@ func NewCollector(targets []Target, globalMaxDepth int, timeout int) (*Collector
 	patternStrings := make([]string, len(targets))
 	maxDepths := make([]int, len(targets))
 
+	seen := make(map[string]bool)
 	for i, t := range targets {
-		paths[i] = t.Path
-
+		cleanPath := filepath.Clean(t.Path)
 		pattern := t.Pattern
 		if pattern == "" {
 			pattern = ".*"
 		}
+
+		key := fmt.Sprintf("%s|%s", cleanPath, pattern)
+		if seen[key] {
+			return nil, fmt.Errorf("duplicate target found: path=%s, pattern=%s", cleanPath, pattern)
+		}
+		seen[key] = true
+
+		paths[i] = cleanPath
 		re, err := regexp.Compile(pattern)
 		if err != nil {
 			return nil, err
@@ -335,13 +343,14 @@ func LoadConfig(configFile string, listenAddress string, paths []string, pattern
 	// Check for duplicate targets (same path and pattern)
 	seen := make(map[string]bool)
 	for _, t := range cfg.Targets {
+		cleanPath := filepath.Clean(t.Path)
 		p := t.Pattern
 		if p == "" {
 			p = ".*"
 		}
-		key := fmt.Sprintf("%s|%s", t.Path, p)
+		key := fmt.Sprintf("%s|%s", cleanPath, p)
 		if seen[key] {
-			return nil, fmt.Errorf("duplicate target found: path=%s, pattern=%s", t.Path, p)
+			return nil, fmt.Errorf("duplicate target found: path=%s, pattern=%s", cleanPath, p)
 		}
 		seen[key] = true
 	}
