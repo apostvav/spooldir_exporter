@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -203,7 +203,7 @@ loop:
 			received[key] = true
 			collectedResults = append(collectedResults, res)
 		case <-ctx.Done():
-			log.Printf("Timeout of %v exceeded", c.timeout)
+			slog.Warn("Scrape timeout exceeded", "timeout", c.timeout)
 			break loop
 		}
 	}
@@ -240,7 +240,7 @@ func (c *Collector) countFiles(ctx context.Context, path string, pattern *regexp
 
 	files, err := os.ReadDir(path)
 	if err != nil {
-		log.Printf("Error reading directory %s: %v", path, err)
+		slog.Error("Error reading directory", "path", path, "error", err)
 		return -1, -1
 	}
 
@@ -262,7 +262,7 @@ func (c *Collector) countFiles(ctx context.Context, path string, pattern *regexp
 			if pattern.MatchString(file.Name()) {
 				info, err := file.Info()
 				if err != nil {
-					log.Printf("Error getting file info for %s: %v", file.Name(), err)
+					slog.Error("Error getting file info", "file", file.Name(), "error", err)
 					continue
 				}
 				// Check for regular files (no symlinks, no directories etc)
@@ -377,17 +377,22 @@ func main() {
 
 	cfg, err := LoadConfig(*configFile, *listenAddress, *paths, *patterns, *maxDepth, *timeout)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("Error loading config", "error", err)
+		os.Exit(1)
 	}
 
 	collector, err := NewCollector(cfg.Targets, cfg.MaxDepth, cfg.Timeout)
 	if err != nil {
-		log.Fatalf("Error creating collector: %v", err)
+		slog.Error("Error creating collector", "error", err)
+		os.Exit(1)
 	}
 
 	prometheus.MustRegister(collector)
 
 	http.Handle("/metrics", promhttp.Handler())
-	log.Printf("Starting spooldir_exporter v%s on %s", version, cfg.ListenAddress)
-	log.Fatal(http.ListenAndServe(cfg.ListenAddress, nil))
+	slog.Info("Starting spooldir_exporter", "version", version, "address", cfg.ListenAddress)
+	if err := http.ListenAndServe(cfg.ListenAddress, nil); err != nil {
+		slog.Error("Server stopped", "error", err)
+		os.Exit(1)
+	}
 }
